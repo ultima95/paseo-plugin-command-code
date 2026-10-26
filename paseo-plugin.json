@@ -1,0 +1,8 @@
+{
+  "id": "command-code",
+  "name": "Command Code",
+  "description": "Run Command Code agents in Paseo over the Agent Client Protocol",
+  "requirements": {
+    "paseo": ">=0.12.0"
+  }
+}
