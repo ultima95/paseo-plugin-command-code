@@ -38,6 +38,9 @@ The provider id is `command-code`. Pick it in the model picker, or set it as a d
   they left off.
 - **Permissions**: file edits and shell commands surface as normal Paseo permission prompts.
 - **Images**: image prompts are supported; audio is not.
+- **Usage**: Paseo's usage view shows the plan, 5-hour and weekly limits, credit balance,
+  cloud minutes, and billing period, read from the same endpoints as the CLI's `/usage`
+  overlay. See it with `paseo usage ls` or in the app's usage view.
 
 ## Configuration
 
@@ -56,6 +59,9 @@ Override the launch command or environment in `~/.paseo/config.json`, then run `
 }
 ```
 
+The usage view reads the same login. It uses `COMMAND_CODE_API_KEY` from the daemon
+environment or the provider's configured `env`, and falls back to `~/.commandcode/auth.json`.
+
 ## Development
 
 ```bash
@@ -73,7 +79,8 @@ dependencies here only so the plugin typechecks locally.
 
 ```
 paseo-plugin.json     plugin manifest
-index.server.ts       server entry, registers the provider
+index.server.ts       server entry, registers the provider and usage source
 server/provider.ts    the ACP provider registration and status probe
+server/usage.ts       the Command Code usage source
 icon.svg              provider icon
 ```
