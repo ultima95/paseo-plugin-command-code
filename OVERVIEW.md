@@ -6,6 +6,8 @@ Setup: install the Command Code CLI on the daemon machine (`npm i -g command-cod
 
 Command Code's own model catalog, reasoning effort options, and permission modes (Standard, Accept Edits, Plan, Don't Ask, Bypass Permissions) are available in the composer, along with image prompts. Sessions persist and can be resumed, because the ACP server supports session load and resume. Paseo tools are not injected: the agent uses its own tools, and file edits and shell commands flow through Paseo's normal permission prompts.
 
+Subagents are first-class too: each Command Code `agent`/`task` delegation appears in Paseo's Subagents panel with its own timeline, so the inner tool steps stream live instead of collapsing into a single "Agent" tool call. Background subagents are collected when the parent reads their result with `agent_output`.
+
 Paseo's usage view also shows Command Code's plan and quota, so you do not need to open the Command Code website to check it. It reports the 5-hour and weekly limits, remaining monthly, purchased, and free credits, cloud minutes when available, the billing period, and request and token counts. The data comes from the same Command Code endpoints that back the CLI's `/usage` overlay; they are not a documented public API and may change.
 
 The plugin reads the API key from `COMMAND_CODE_API_KEY` or `~/.commandcode/auth.json` to query those usage endpoints, and it does not log or store the key. The provider status probe still only checks that a login exists. To point at a different binary or environment, set `command` or `env` under `agents.providers.command-code` in `~/.paseo/config.json`.

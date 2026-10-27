@@ -37,6 +37,9 @@ The provider id is `command-code`. Pick it in the model picker, or set it as a d
 - **Persistence**: the ACP server supports session load and resume, so agents reopen where
   they left off.
 - **Permissions**: file edits and shell commands surface as normal Paseo permission prompts.
+- **Subagents**: each `agent`/`task` call becomes a Paseo subagent with its own timeline, live
+  inner tool steps, and final result. The parent's "Agent" row becomes a subagent card, and the
+  run shows up in Paseo's Subagents panel.
 - **Images**: image prompts are supported; audio is not.
 - **Usage**: Paseo's usage view shows the plan, 5-hour and weekly limits, credit balance,
   cloud minutes, and billing period, read from the same endpoints as the CLI's `/usage`
@@ -81,6 +84,8 @@ dependencies here only so the plugin typechecks locally.
 paseo-plugin.json     plugin manifest
 index.server.ts       server entry, registers the provider and usage source
 server/provider.ts    the ACP provider registration and status probe
+server/acp-connector.ts  owns the ACP transport so provider updates are observable
+server/subagents.ts   projects `agent`/`task` calls into Paseo child sessions
 server/usage.ts       the Command Code usage source
 icon.svg              provider icon
 ```
