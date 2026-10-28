@@ -1,6 +1,10 @@
+import { randomUUID } from "node:crypto";
+import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { spawnProcess, terminateProcess } from "@getpaseo/plugin/server";
 import type { AcpStream, AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
+import { extractSystemPrompt, type PromptChannel } from "./system-prompt-mod";
 
 /**
  * The ACP shim exposes a connector extension point precisely so a provider can
@@ -13,14 +17,48 @@ export function createAcpConnector(
   launch: ProviderLaunch | undefined,
   fallback: readonly [string, ...string[]],
   observe: (message: AcpStreamMessage) => void,
+  promptChannel?: PromptChannel,
 ): AcpStream {
-  const child = spawnProcess(launch?.command ?? fallback[0], launch?.args ?? fallback.slice(1), {
+  // The channel names a directory, not a file: this function runs once per
+  // spawned child, and one file shared across children would let a catalog or
+  // discovery child's exit delete the prompt a session child has not read yet.
+  const promptFile = promptChannel
+    ? join(promptChannel.promptsDir, `${randomUUID()}.md`)
+    : undefined;
+
+  // Command Code takes mods after the subcommand (`cmd acp --mod ...`), so they
+  // are appended to whatever launch the daemon resolved.
+  const baseArgs = launch?.args ?? fallback.slice(1);
+  const args = promptChannel && promptFile
+    ? [
+        ...baseArgs,
+        "--mod",
+        promptChannel.modPath,
+        "--mod-option",
+        `system-prompt-file=${promptFile}`,
+      ]
+    : baseArgs;
+
+  const child = spawnProcess(launch?.command ?? fallback[0], args, {
     env: launch?.env ?? process.env,
     stdio: "pipe",
   });
 
   // The shim drains stderr in command mode; keep the pipe flowing here too.
   child.stderr.on("data", () => undefined);
+
+  // The staged prompt belongs to this child alone; never leave one behind, and
+  // never touch a file this child did not allocate.
+  if (promptFile !== undefined) {
+    const own = promptFile;
+    child.once("close", () => {
+      try {
+        rmSync(own, { force: true });
+      } catch {
+        // Ignore: cleanup must never fail a finished session.
+      }
+    });
+  }
 
   const readable = new ReadableStream<AcpStreamMessage>({
     start(controller) {
@@ -103,6 +141,21 @@ export function createAcpConnector(
 
   const writable = new WritableStream<AcpStreamMessage>({
     write(message) {
+      // The mod reads the file while the child handles the session request, so
+      // the file has to land before the request is forwarded.
+      if (promptFile !== undefined) {
+        const prompt = extractSystemPrompt(message);
+        if (prompt) {
+          try {
+            writeFileSync(promptFile, prompt, "utf8");
+          } catch (error) {
+            // Best-effort: a prompt we cannot stage must not break the session,
+            // but stay diagnosable — the mod will simply append nothing.
+            const reason = error instanceof Error ? error.message : String(error);
+            process.stderr.write(`command-code: cannot stage system prompt (${reason})\n`);
+          }
+        }
+      }
       if (!child.stdin.writable) return;
       child.stdin.write(`${JSON.stringify(message)}\n`);
     },

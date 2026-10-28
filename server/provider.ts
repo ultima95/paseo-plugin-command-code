@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { access } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { execCommand } from "@getpaseo/plugin/server";
@@ -17,6 +17,7 @@ import type {
 } from "@getpaseo/plugin/server/provider";
 import { createAcpConnector } from "./acp-connector";
 import { SubagentBridge } from "./subagents";
+import { ensureModFile, type PromptChannel } from "./system-prompt-mod";
 
 /**
  * Command Code ships its CLI as `cmd` everywhere except Windows, where `cmd` is
@@ -57,11 +58,13 @@ async function isSignedIn(): Promise<boolean> {
 
 /**
  * A connector runs inside the provider connection that created it. The store
- * carries that connection's launch and subagent bridge into the transport.
+ * carries that connection's launch, subagent bridge, and prompt channel into the
+ * transport.
  */
 const connectionState = new AsyncLocalStorage<{
   bridge: SubagentBridge;
   launch?: ProviderLaunch;
+  promptChannel?: PromptChannel;
 }>();
 
 const connector: AcpConnector = () => {
@@ -69,8 +72,11 @@ const connector: AcpConnector = () => {
   if (!state) {
     throw new Error("Command Code ACP connector started outside a provider connection");
   }
-  return createAcpConnector(state.launch, [CLI, "acp"], (message) =>
-    state.bridge.observe(message),
+  return createAcpConnector(
+    state.launch,
+    [CLI, "acp"],
+    (message) => state.bridge.observe(message),
+    state.promptChannel,
   );
 };
 
@@ -82,6 +88,32 @@ const acp = runAcpProvider({
   connector,
   transformers: [normalizeFailedToolCalls],
 });
+
+/**
+ * Command Code has no ACP field for a system prompt, so each connection stages
+ * the prompt through a mod: the plugin keeps one mod file in its data directory,
+ * and the connector allocates one fresh prompt file per spawned child inside the
+ * prompts directory created here.
+ */
+function pluginDataDir(): string {
+  return join(process.env.PASEO_HOME ?? join(homedir(), ".paseo"), "plugin-data", "command-code");
+}
+
+async function preparePromptChannel(): Promise<PromptChannel | undefined> {
+  try {
+    const dir = pluginDataDir();
+    const modPath = await ensureModFile(dir);
+    const promptsDir = join(dir, "prompts");
+    // Created here, once per connection; the per-child files are the connector's.
+    await mkdir(promptsDir, { recursive: true });
+    return { modPath, promptsDir };
+  } catch (error) {
+    // Losing the prompt is much better than losing the provider entirely.
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`command-code: system prompt channel unavailable (${message})\n`);
+    return undefined;
+  }
+}
 
 /**
  * Command Code runs its agent over ACP on stdio, so Paseo's ACP shim owns the
@@ -98,7 +130,11 @@ export function createProvider(): ProviderRegistration {
 
     async connect(request: ProviderConnectRequest) {
       const bridge = new SubagentBridge();
-      const state = { bridge, launch: request.launch };
+      const state = {
+        bridge,
+        launch: request.launch,
+        promptChannel: await preparePromptChannel(),
+      };
       const connection = await connectionState.run(state, () => acp.connect(request));
       return bridge.wrap(connection, (operation) => connectionState.run(state, operation));
     },
