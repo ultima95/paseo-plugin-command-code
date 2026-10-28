@@ -1,5 +1,4 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
 import { access, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -92,8 +91,9 @@ const acp = runAcpProvider({
 
 /**
  * Command Code has no ACP field for a system prompt, so each connection stages
- * the prompt through a mod: the plugin keeps one mod file in its data directory
- * and a fresh, per-connection prompt file the mod reads.
+ * the prompt through a mod: the plugin keeps one mod file in its data directory,
+ * and the connector allocates one fresh prompt file per spawned child inside the
+ * prompts directory created here.
  */
 function pluginDataDir(): string {
   return join(process.env.PASEO_HOME ?? join(homedir(), ".paseo"), "plugin-data", "command-code");
@@ -104,8 +104,9 @@ async function preparePromptChannel(): Promise<PromptChannel | undefined> {
     const dir = pluginDataDir();
     const modPath = await ensureModFile(dir);
     const promptsDir = join(dir, "prompts");
+    // Created here, once per connection; the per-child files are the connector's.
     await mkdir(promptsDir, { recursive: true });
-    return { modPath, promptFile: join(promptsDir, `${randomUUID()}.md`) };
+    return { modPath, promptsDir };
   } catch (error) {
     // Losing the prompt is much better than losing the provider entirely.
     const message = error instanceof Error ? error.message : String(error);

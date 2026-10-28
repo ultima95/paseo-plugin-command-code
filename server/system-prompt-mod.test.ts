@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAcpConnector } from "./acp-connector";
@@ -46,6 +47,10 @@ describe("SYSTEM_PROMPT_MOD_SOURCE", () => {
     expect(SYSTEM_PROMPT_MOD_SOURCE).toContain('addFlag("system-prompt-file"');
     expect(SYSTEM_PROMPT_MOD_SOURCE).toContain("system-prompt-file");
     expect(SYSTEM_PROMPT_MOD_SOURCE).toContain("export default function");
+  });
+
+  it("re-reads an empty cached prompt instead of pinning it", () => {
+    expect(SYSTEM_PROMPT_MOD_SOURCE).toContain('if (cached === undefined || cached === "") {');
   });
 });
 
@@ -134,7 +139,7 @@ describe("ensureModFile", () => {
 describe("createAcpConnector prompt channel", () => {
   const describeUnix = process.platform === "win32" ? describe.skip : describe;
 
-  async function startConnector(promptChannel?: { modPath: string; promptFile: string }) {
+  async function startConnector(promptChannel?: { modPath: string; promptsDir: string }) {
     const dir = await makeDir();
     const script = join(dir, "child.mjs");
     await writeFile(
@@ -177,22 +182,32 @@ describe("createAcpConnector prompt channel", () => {
     return { stream, reader, next };
   }
 
+  /** The `--mod-option system-prompt-file=…` value the child was started with. */
+  function stagedFile(argv: string[]): string {
+    const option = argv.find((arg) => arg.startsWith("system-prompt-file="));
+    if (option === undefined) throw new Error(`no prompt flag in ${JSON.stringify(argv)}`);
+    return option.slice("system-prompt-file=".length);
+  }
+
+  async function promotedChannel(dir: string, modPath: string) {
+    const promptsDir = join(dir, "prompts");
+    await mkdir(promptsDir, { recursive: true });
+    return { modPath, promptsDir };
+  }
+
   describeUnix("forwards the prompt it extracts", () => {
-    it("passes the mod flags, writes the prompt before forwarding, and cleans up", async () => {
+    it("allocates a per-child prompt file, writes it before forwarding, and cleans up", async () => {
       const dir = await makeDir();
       const modPath = join(dir, "system-prompt-mod.mjs");
-      const promptDir = join(dir, "prompts");
-      await mkdir(promptDir, { recursive: true });
-      const promptFile = join(promptDir, "session.md");
-      const { stream, reader, next } = await startConnector({ modPath, promptFile });
+      const channel = await promotedChannel(dir, modPath);
+      const { stream, reader, next } = await startConnector(channel);
 
-      const argv = await next("child/argv");
-      expect((argv as { params: { argv: string[] } }).params.argv).toEqual([
-        "--mod",
-        modPath,
-        "--mod-option",
-        `system-prompt-file=${promptFile}`,
-      ]);
+      const argv = (await next("child/argv") as { params: { argv: string[] } }).params.argv;
+      const promptFile = stagedFile(argv);
+      expect(argv).toEqual(["--mod", modPath, "--mod-option", `system-prompt-file=${promptFile}`]);
+      // The file is the connector's, inside the directory the provider created.
+      expect(promptFile.startsWith(`${channel.promptsDir}/`)).toBe(true);
+      expect(promptFile.endsWith(".md")).toBe(true);
 
       const writer = stream.writable.getWriter();
       await writer.write(request("session/prompt", metaPrompt("IGNORED")) as AcpStreamMessage);
@@ -210,6 +225,38 @@ describe("createAcpConnector prompt channel", () => {
       await reader.cancel().catch(() => undefined);
     });
 
+    it("gives each child its own file and a closing child deletes only its own", async () => {
+      const dir = await makeDir();
+      const modPath = join(dir, "system-prompt-mod.mjs");
+      const channel = await promotedChannel(dir, modPath);
+
+      const session = await startConnector(channel);
+      const catalog = await startConnector(channel);
+
+      const sessionFile = stagedFile((await session.next("child/argv") as { params: { argv: string[] } }).params.argv);
+      const catalogFile = stagedFile((await catalog.next("child/argv") as { params: { argv: string[] } }).params.argv);
+      expect(catalogFile).not.toBe(sessionFile);
+
+      // The session's prompt lands first; a catalog child closes before the mod
+      // reads. That close must not take the session's staged prompt with it.
+      const sessionWriter = session.stream.writable.getWriter();
+      await sessionWriter.write(request("session/new", metaPrompt("SESSION ROLE")) as AcpStreamMessage);
+      await expect(readFile(sessionFile, "utf8")).resolves.toBe("SESSION ROLE");
+
+      const catalogWriter = catalog.stream.writable.getWriter();
+      await catalogWriter.write(request("session/new", metaPrompt("CATALOG")) as AcpStreamMessage);
+      await expect(readFile(catalogFile, "utf8")).resolves.toBe("CATALOG");
+
+      await catalogWriter.close();
+      await waitFor(() => !existsSync(catalogFile));
+      await expect(readFile(sessionFile, "utf8")).resolves.toBe("SESSION ROLE");
+
+      await sessionWriter.close();
+      await waitFor(() => !existsSync(sessionFile));
+      await session.reader.cancel().catch(() => undefined);
+      await catalog.reader.cancel().catch(() => undefined);
+    });
+
     it("spawns without mod flags when no prompt channel is given", async () => {
       const { stream, reader, next } = await startConnector();
       const argv = await next("child/argv");
@@ -217,5 +264,61 @@ describe("createAcpConnector prompt channel", () => {
       await stream.writable.getWriter().close();
       await reader.cancel().catch(() => undefined);
     });
+  });
+});
+
+interface FakeModCmd {
+  addFlag(name: string, spec: unknown): void;
+  getFlag(name: string): string | undefined;
+  hooks(hooks: { appendSystemPrompt(): string | undefined }): void;
+}
+
+/** Load a freshly written mod file and wire it to a stand-in for Command Code's `cmd`. */
+async function runMod(promptFile: string): Promise<() => string | undefined> {
+  const dir = await makeDir();
+  const file = await ensureModFile(dir);
+  const mod = (await import(pathToFileURL(file).href)) as { default: (cmd: FakeModCmd) => void };
+  const flags = new Map<string, string>([["system-prompt-file", promptFile]]);
+  let append: (() => string | undefined) | undefined;
+  mod.default({
+    addFlag: (name, _spec) => {
+      if (!flags.has(name)) flags.set(name, "");
+    },
+    getFlag: (name) => flags.get(name),
+    hooks: (hooks) => {
+      append = hooks.appendSystemPrompt;
+    },
+  });
+  if (!append) throw new Error("the mod registered no appendSystemPrompt hook");
+  return append;
+}
+
+describe("the generated mod at runtime", () => {
+  it("re-reads an empty read instead of caching the absence of a prompt", async () => {
+    const dir = await makeDir();
+    const promptFile = join(dir, "prompt.md");
+    const append = await runMod(promptFile);
+
+    // Nothing staged yet: the hook says "no prompt" and must not memoize it.
+    expect(append()).toBeUndefined();
+
+    await writeFile(promptFile, "ROLE", "utf8");
+    expect(append()).toBe("ROLE");
+  });
+
+  it("keeps the prompt byte-stable once it has read one", async () => {
+    const dir = await makeDir();
+    const promptFile = join(dir, "prompt.md");
+    await writeFile(promptFile, "ROLE", "utf8");
+    const append = await runMod(promptFile);
+
+    expect(append()).toBe("ROLE");
+    await writeFile(promptFile, "CHANGED", "utf8");
+    expect(append()).toBe("ROLE");
+  });
+
+  it("returns undefined when the flag names no file", async () => {
+    const append = await runMod("");
+    expect(append()).toBeUndefined();
   });
 });

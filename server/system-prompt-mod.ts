@@ -10,6 +10,9 @@ import type { AcpStreamMessage } from "@getpaseo/plugin/server/acp";
  *
  * The prompt is read once on the first hook call so every round replays the same
  * bytes; re-reading would let a later session change an earlier one's prompt.
+ * An empty read is not cached: a child whose first hook call lands before the
+ * session request wrote the file (or whose scan finds the file missing) must
+ * read again on the next call instead of memoizing "no prompt" for the session.
  */
 export const SYSTEM_PROMPT_MOD_SOURCE = `import { readFileSync } from "node:fs";
 export default function (cmd) {
@@ -17,7 +20,7 @@ export default function (cmd) {
   let cached;
   cmd.hooks({
     appendSystemPrompt() {
-      if (cached === undefined) {
+      if (cached === undefined || cached === "") {
         const file = cmd.getFlag("system-prompt-file");
         try { cached = file ? readFileSync(file, "utf8") : ""; } catch { cached = ""; }
       }
@@ -27,10 +30,16 @@ export default function (cmd) {
 }
 `;
 
-/** Where the connector finds the mod and the file the mod reads. */
+/**
+ * Where the connector finds the mod, and the directory it stages one prompt file
+ * per spawned child in. The file itself is allocated inside the connector: one
+ * provider connection runs a connector per child, and a file shared by all of
+ * them would let any child's exit delete the prompt another child's mod has not
+ * read yet.
+ */
 export interface PromptChannel {
   modPath: string;
-  promptFile: string;
+  promptsDir: string;
 }
 
 const MOD_FILE_NAME = "system-prompt-mod.mjs";

@@ -1,4 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { spawnProcess, terminateProcess } from "@getpaseo/plugin/server";
 import type { AcpStream, AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
@@ -17,16 +19,23 @@ export function createAcpConnector(
   observe: (message: AcpStreamMessage) => void,
   promptChannel?: PromptChannel,
 ): AcpStream {
+  // The channel names a directory, not a file: this function runs once per
+  // spawned child, and one file shared across children would let a catalog or
+  // discovery child's exit delete the prompt a session child has not read yet.
+  const promptFile = promptChannel
+    ? join(promptChannel.promptsDir, `${randomUUID()}.md`)
+    : undefined;
+
   // Command Code takes mods after the subcommand (`cmd acp --mod ...`), so they
   // are appended to whatever launch the daemon resolved.
   const baseArgs = launch?.args ?? fallback.slice(1);
-  const args = promptChannel
+  const args = promptChannel && promptFile
     ? [
         ...baseArgs,
         "--mod",
         promptChannel.modPath,
         "--mod-option",
-        `system-prompt-file=${promptChannel.promptFile}`,
+        `system-prompt-file=${promptFile}`,
       ]
     : baseArgs;
 
@@ -38,11 +47,13 @@ export function createAcpConnector(
   // The shim drains stderr in command mode; keep the pipe flowing here too.
   child.stderr.on("data", () => undefined);
 
-  // The staged prompt belongs to this child alone; never leave one behind.
-  if (promptChannel) {
+  // The staged prompt belongs to this child alone; never leave one behind, and
+  // never touch a file this child did not allocate.
+  if (promptFile !== undefined) {
+    const own = promptFile;
     child.once("close", () => {
       try {
-        rmSync(promptChannel.promptFile, { force: true });
+        rmSync(own, { force: true });
       } catch {
         // Ignore: cleanup must never fail a finished session.
       }
@@ -132,11 +143,11 @@ export function createAcpConnector(
     write(message) {
       // The mod reads the file while the child handles the session request, so
       // the file has to land before the request is forwarded.
-      if (promptChannel) {
+      if (promptFile !== undefined) {
         const prompt = extractSystemPrompt(message);
         if (prompt) {
           try {
-            writeFileSync(promptChannel.promptFile, prompt, "utf8");
+            writeFileSync(promptFile, prompt, "utf8");
           } catch (error) {
             // Best-effort: a prompt we cannot stage must not break the session,
             // but stay diagnosable — the mod will simply append nothing.
