@@ -461,14 +461,15 @@ function buildBalances(
 
     if (pool > 0 || remaining > 0) {
       const used = round2(Math.max(0, pool - remaining));
+      const usedPct = percentOf(used, pool);
       balances.push({
         id: "credits",
-        label: "Credits",
+        label: usedPct === null ? "Credits" : `Credits · ${usedPct}% used`,
         ...(pool > 0 ? { used, limit: pool } : {}),
         remaining,
         unit: "credits",
         resetsAt: isoFromString(subscriptionData?.currentPeriodEnd),
-        tone: toneFromUsedPct(percentOf(used, pool)),
+        tone: toneFromUsedPct(usedPct),
       });
     }
 
