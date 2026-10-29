@@ -92,7 +92,7 @@ export function createAcpConnector(
         }
         if (finished) return;
         try {
-          controller.enqueue(message);
+          controller.enqueue(hideQuestionInput(message));
         } catch {
           finished = true;
         }
@@ -168,4 +168,32 @@ export function createAcpConnector(
   });
 
   return { readable, writable };
+}
+
+type JsonRecord = Record<string, unknown>;
+
+/**
+ * Paseo renders a permission request's `input` as a raw JSON block. Command
+ * Code asks questions through `ask_user_question`, whose question text is
+ * already the card title and whose choices are already the action buttons, so
+ * the JSON only repeats them. Blank the payload before the shim sees it.
+ */
+function hideQuestionInput(message: AcpStreamMessage): AcpStreamMessage {
+  if (!("method" in message) || !("id" in message)) return message;
+  if (message.method !== "session/request_permission") return message;
+  const params = asRecord(message.params);
+  const toolCall = asRecord(params?.toolCall);
+  const rawInput = asRecord(toolCall?.rawInput);
+  if (!rawInput || typeof rawInput.question !== "string" || !Array.isArray(rawInput.options)) {
+    return message;
+  }
+  return {
+    ...message,
+    params: { ...params, toolCall: { ...toolCall, rawInput: {} } },
+  };
+}
+
+function asRecord(value: unknown): JsonRecord | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  return value as JsonRecord;
 }
