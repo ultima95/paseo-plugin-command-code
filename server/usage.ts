@@ -228,6 +228,19 @@ function formatDate(value: string | null): string | null {
     : date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 }
 
+function formatResetCountdown(value: string | null, now = Date.now()): string | null {
+  if (!value) return null;
+  const remaining = Date.parse(value) - now;
+  if (!Number.isFinite(remaining)) return null;
+  if (remaining <= 0) return "resets now";
+  const minutes = Math.floor(remaining / 60_000);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `${days}d left`;
+  if (hours > 0) return `${hours}h left`;
+  return `${minutes}m left`;
+}
+
 function homeFrom(env: NodeJS.ProcessEnv | Record<string, string>): string {
   return env.HOME || env.USERPROFILE || homedir();
 }
@@ -369,10 +382,11 @@ function windowFromUsed(input: {
 }): UsageWindow | null {
   if (input.used == null || input.cap == null || input.cap <= 0) return null;
   const usedPct = percentOf(input.used, input.cap);
+  const shortLabel = formatResetCountdown(input.resetsAt) ?? input.shortLabel;
   return windowFromUsedPct({
     id: input.id,
     label: input.label,
-    ...(input.shortLabel !== undefined ? { shortLabel: input.shortLabel } : {}),
+    ...(shortLabel !== undefined ? { shortLabel } : {}),
     ...(input.summary !== undefined ? { summary: input.summary } : {}),
     utilizationPct: usedPct,
     resetsAt: input.resetsAt,
