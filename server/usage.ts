@@ -440,18 +440,14 @@ function creditWindow(
   if (pool <= 0 && remaining <= 0) return null;
 
   const used = round2(Math.max(0, pool - remaining));
-  const usedPct = percentOf(used, pool);
-  const resetsAt = isoFromString(subscriptionData?.currentPeriodEnd);
-  const countdown = formatResetCountdown(resetsAt);
-  const amount = `${formatCredits(remaining)} left`;
 
-  return windowFromUsedPct({
+  return windowFromUsed({
     id: "credits",
-    label: `Credits · ${amount}`,
-    shortLabel: countdown ? `${formatCredits(remaining)} · ${countdown}` : amount,
-    utilizationPct: usedPct,
-    resetsAt,
-    tone: toneFromUsedPct(usedPct),
+    label: "Credits",
+    shortLabel: "cr",
+    used,
+    cap: pool,
+    resetsAt: isoFromString(subscriptionData?.currentPeriodEnd),
   });
 }
 
