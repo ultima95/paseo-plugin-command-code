@@ -26,7 +26,7 @@ afterEach(async () => {
 });
 
 describe("Command Code usage source", () => {
-  it("exposes credits as a pinnable window with percent and reset countdown", async () => {
+  it("shows the credit amount in the card but only percent and countdown when pinned", async () => {
     const periodEnd = new Date(Date.now() + 22 * 86_400_000 + 3_600_000).toISOString();
     const periodStart = new Date(Date.now() - 8 * 86_400_000).toISOString();
 
@@ -77,7 +77,7 @@ describe("Command Code usage source", () => {
     const credits = report.windows.find((window) => window.id === "credits");
     expect(credits).toMatchObject({
       id: "credits",
-      label: "Credits",
+      label: "Credits · 19.55 left",
       shortLabel: "22d left",
       usedPct: 72.07,
       resetsAt: periodEnd,

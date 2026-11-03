@@ -443,7 +443,7 @@ function creditWindow(
 
   return windowFromUsed({
     id: "credits",
-    label: "Credits",
+    label: `Credits · ${formatCredits(remaining)} left`,
     shortLabel: "cr",
     used,
     cap: pool,
