@@ -394,7 +394,73 @@ function windowFromUsed(input: {
   });
 }
 
-function buildWindows(credits: CreditsBody | null, details: UsageDetail[]): UsageWindow[] {
+function creditWindow(
+  credits: CreditsBody | null,
+  subscription: SubscriptionBody | null,
+  summary: SummaryBody | null,
+  details: UsageDetail[],
+): UsageWindow | null {
+  const rawCredits = credits?.credits;
+  if (!rawCredits) return null;
+
+  const monthly = round2(Math.max(0, rawCredits.monthlyCredits ?? 0));
+  const purchased = round2(Math.max(0, rawCredits.purchasedCredits ?? 0));
+  const free = round2(Math.max(0, rawCredits.freeCredits ?? 0));
+  const remaining = round2(monthly + purchased + free);
+
+  if (monthly > 0) {
+    details.push({
+      id: "monthly_credits",
+      label: "Monthly credits left",
+      value: formatCredits(monthly),
+    });
+  }
+  if (purchased > 0) {
+    details.push({
+      id: "purchased_credits",
+      label: "Purchased credits",
+      value: formatCredits(purchased),
+    });
+  }
+  if (free > 0) {
+    details.push({ id: "free_credits", label: "Free credits", value: formatCredits(free) });
+  }
+
+  const subscriptionData = subscription?.data;
+  const plan = planFor(subscriptionData?.planId ?? rawCredits.planId);
+  const activePlanCredits =
+    subscriptionData?.status === "active" ? (plan?.monthlyCredits ?? null) : null;
+  const spent = round2(Math.max(0, summary?.totalCost ?? 0));
+  const pool = round2(
+    activePlanCredits !== null
+      ? Math.max(activePlanCredits, monthly) + purchased + free
+      : spent + remaining,
+  );
+
+  if (pool <= 0 && remaining <= 0) return null;
+
+  const used = round2(Math.max(0, pool - remaining));
+  const usedPct = percentOf(used, pool);
+  const resetsAt = isoFromString(subscriptionData?.currentPeriodEnd);
+  const countdown = formatResetCountdown(resetsAt);
+  const amount = `${formatCredits(remaining)} left`;
+
+  return windowFromUsedPct({
+    id: "credits",
+    label: `Credits · ${amount}`,
+    shortLabel: countdown ? `${formatCredits(remaining)} · ${countdown}` : amount,
+    utilizationPct: usedPct,
+    resetsAt,
+    tone: toneFromUsedPct(usedPct),
+  });
+}
+
+function buildWindows(
+  credits: CreditsBody | null,
+  subscription: SubscriptionBody | null,
+  summary: SummaryBody | null,
+  details: UsageDetail[],
+): UsageWindow[] {
   const windows: UsageWindow[] = [];
   const limits = credits?.windowLimits ?? null;
 
@@ -422,6 +488,9 @@ function buildWindows(credits: CreditsBody | null, details: UsageDetail[]): Usag
     if (weekly) windows.push(weekly);
   }
 
+  const credit = creditWindow(credits, subscription, summary, details);
+  if (credit) windows.push(credit);
+
   const sandbox = credits?.sandboxMinutes;
   if (credits?.sandboxAccess && sandbox) {
     const cloudMinutes = windowFromUsed({
@@ -446,65 +515,8 @@ function buildWindows(credits: CreditsBody | null, details: UsageDetail[]): Usag
   return windows;
 }
 
-function buildBalances(
-  credits: CreditsBody | null,
-  subscription: SubscriptionBody | null,
-  summary: SummaryBody | null,
-  whoami: WhoamiBody | null,
-  details: UsageDetail[],
-): UsageBalance[] {
+function buildBalances(whoami: WhoamiBody | null): UsageBalance[] {
   const balances: UsageBalance[] = [];
-  const rawCredits = credits?.credits;
-
-  if (rawCredits) {
-    const monthly = round2(Math.max(0, rawCredits.monthlyCredits ?? 0));
-    const purchased = round2(Math.max(0, rawCredits.purchasedCredits ?? 0));
-    const free = round2(Math.max(0, rawCredits.freeCredits ?? 0));
-    const remaining = round2(monthly + purchased + free);
-
-    const subscriptionData = subscription?.data;
-    const plan = planFor(subscriptionData?.planId ?? rawCredits.planId);
-    const activePlanCredits =
-      subscriptionData?.status === "active" ? (plan?.monthlyCredits ?? null) : null;
-    const spent = round2(Math.max(0, summary?.totalCost ?? 0));
-    const pool = round2(
-      activePlanCredits !== null
-        ? Math.max(activePlanCredits, monthly) + purchased + free
-        : spent + remaining,
-    );
-
-    if (pool > 0 || remaining > 0) {
-      const used = round2(Math.max(0, pool - remaining));
-      const usedPct = percentOf(used, pool);
-      balances.push({
-        id: "credits",
-        label: usedPct === null ? "Credits" : `Credits · ${usedPct}% used`,
-        ...(pool > 0 ? { used, limit: pool } : {}),
-        remaining,
-        unit: "credits",
-        resetsAt: isoFromString(subscriptionData?.currentPeriodEnd),
-        tone: toneFromUsedPct(usedPct),
-      });
-    }
-
-    if (monthly > 0) {
-      details.push({
-        id: "monthly_credits",
-        label: "Monthly credits left",
-        value: formatCredits(monthly),
-      });
-    }
-    if (purchased > 0) {
-      details.push({
-        id: "purchased_credits",
-        label: "Purchased credits",
-        value: formatCredits(purchased),
-      });
-    }
-    if (free > 0) {
-      details.push({ id: "free_credits", label: "Free credits", value: formatCredits(free) });
-    }
-  }
 
   for (const [index, limit] of (whoami?.orgLimits ?? []).entries()) {
     const used = limit.spent;
@@ -592,8 +604,8 @@ async function fetchUsage(input: unknown, fetchApi: typeof fetch = fetch): Promi
       (await getOptionalJson(summaryPath, credentials.apiKey, summaryBodySchema, fetchApi)) ?? null;
 
     const details = buildDetails(subscription, summary);
-    const windows = buildWindows(credits.body, details);
-    const balances = buildBalances(credits.body, subscription, summary, whoami.body, details);
+    const windows = buildWindows(credits.body, subscription, summary, details);
+    const balances = buildBalances(whoami.body);
     const planId = subscription?.data?.planId ?? credits.body.credits?.planId;
     const label = planLabel(planId);
 
