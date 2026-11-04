@@ -403,7 +403,7 @@ describe("the generated mod answering questions", () => {
       "utf8",
     );
     await expect(pending).resolves.toEqual({
-      result: [{ type: "text", text: "The user answered:\nApproach: Take the other path" }],
+      result: [{ type: "text", text: "Which one? \u2192 Take the other path" }],
     });
   });
 
@@ -429,12 +429,7 @@ describe("the generated mod answering questions", () => {
     }
     await writeFile(answerFile, JSON.stringify({ cancelled: true }), "utf8");
     await expect(pending).resolves.toEqual({
-      result: [
-        {
-          type: "text",
-          text: "The user dismissed the question without answering. Continue with your best judgment, or ask again with different options.",
-        },
-      ],
+      result: [{ type: "text", text: "User declined to answer questions" }],
     });
   });
 

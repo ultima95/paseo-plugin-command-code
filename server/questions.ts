@@ -1,4 +1,4 @@
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import type {
@@ -105,7 +105,7 @@ export class QuestionBridge {
         if (sessionId === event.sessionId) this.sessions.delete(nativeId);
       }
     }
-    this.deliver(event);
+    this.emit(event);
   }
 
   private async drain(): Promise<void> {
@@ -140,8 +140,14 @@ export class QuestionBridge {
       return;
     }
     const fileId = asString(request.id);
+    if (!fileId) return;
     const questions = normalizeQuestions(request);
-    if (!fileId || !questions) return;
+    if (!questions) {
+      // Nothing the form can render: unblock the mod instead of letting it
+      // wait out its timeout.
+      await this.decline(dir, fileId, "The question could not be displayed.");
+      return;
+    }
 
     const nativeId =
       asString(request.sessionId) ??
@@ -156,6 +162,8 @@ export class QuestionBridge {
       if (attempt <= 25) {
         this.seen.delete(file);
         setTimeout(() => void this.drain(), 200).unref?.();
+      } else {
+        await this.decline(dir, fileId, "Paseo could not display the question.");
       }
       return;
     }
@@ -205,8 +213,12 @@ export class QuestionBridge {
     for (const listener of this.listeners) listener(event);
   }
 
-  private deliver(event: ProviderEvent): void {
-    for (const listener of this.listeners) listener(event);
+  private async decline(dir: string, fileId: string, message: string): Promise<void> {
+    await writeFile(
+      join(dir, `answer-${sanitizeId(fileId)}.json`),
+      JSON.stringify({ cancelled: true, message }),
+      "utf8",
+    ).catch(() => undefined);
   }
 }
 
@@ -242,6 +254,8 @@ export function normalizeQuestions(
       options.push({
         label,
         ...(asString(option?.description) ? { description: asString(option?.description) } : {}),
+        // Paseo renders an option's `preview` beside the choice list.
+        ...(asString(option?.preview) ? { preview: asString(option?.preview) } : {}),
       });
     }
     questions.push({
@@ -256,7 +270,7 @@ export function normalizeQuestions(
   return questions.length > 0 ? questions : null;
 }
 
-export function sanitizeId(value: string): string {
+function sanitizeId(value: string): string {
   return value.replace(/[^A-Za-z0-9_.-]/g, "_");
 }
 
@@ -267,10 +281,4 @@ function asRecord(value: unknown): JsonRecord | null {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-/** Creates the base directory child channel folders are allocated in. */
-export async function prepareQuestionDir(dir: string): Promise<string> {
-  await mkdir(dir, { recursive: true });
-  return dir;
 }

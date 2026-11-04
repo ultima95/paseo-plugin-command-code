@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -88,6 +89,21 @@ describe("normalizeQuestions", () => {
     expect(questions?.[0]).toMatchObject({ header: "Scope", allowOther: false });
   });
 
+  it("passes an option preview through to the form", () => {
+    const questions = normalizeQuestions({
+      questions: [
+        {
+          header: "UI",
+          question: "Which direction?",
+          options: [{ label: "Editorial ivory", preview: "```\n┌───┐\n│ A │\n└───┘\n```" }],
+        },
+      ],
+    });
+    expect(questions?.[0]?.options).toEqual([
+      { label: "Editorial ivory", preview: "```\n┌───┐\n│ A │\n└───┘\n```" },
+    ]);
+  });
+
   it("drops entries the form cannot render", () => {
     expect(normalizeQuestions({ questions: [{ options: ["A"] }] })).toBeNull();
     expect(normalizeQuestions({ questions: [] })).toBeNull();
@@ -176,6 +192,27 @@ describe("QuestionBridge", () => {
     });
     const answer = JSON.parse(await readFile(join(dir, "answer-call-2.json"), "utf8")) as unknown;
     expect(answer).toEqual({ cancelled: true, message: "Dismissed by user" });
+    await wrapped.close();
+  });
+
+  it("unblocks a request the form cannot render", async () => {
+    const dir = await makeDir();
+    const { connection, emit } = fakeConnection();
+    const bridge = new QuestionBridge();
+    const events: ProviderEvent[] = [];
+    const wrapped = bridge.wrap(connection, (operation) => operation());
+    wrapped.onEvent((event) => events.push(event));
+    emit(opened);
+    bridge.register(dir);
+    await writeFile(
+      join(dir, "request-call-3.json"),
+      JSON.stringify({ id: "call-3", sessionId: "native-session", questions: [] }),
+      "utf8",
+    );
+    await waitFor(() => existsSync(join(dir, "answer-call-3.json")));
+    const answer = JSON.parse(await readFile(join(dir, "answer-call-3.json"), "utf8")) as unknown;
+    expect(answer).toMatchObject({ cancelled: true });
+    expect(events.some((event) => event.type === "session.permission")).toBe(false);
     await wrapped.close();
   });
 

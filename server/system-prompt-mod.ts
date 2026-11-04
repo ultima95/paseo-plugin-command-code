@@ -82,9 +82,7 @@ export default function (cmd) {
 function answerText(questions, raw) {
   let payload = null;
   try { payload = JSON.parse(raw); } catch {}
-  if (payload && payload.cancelled) {
-    return "The user dismissed the question without answering. Continue with your best judgment, or ask again with different options.";
-  }
+  if (payload && payload.cancelled) return "User declined to answer questions";
   const answers = payload && typeof payload.answers === "object" && payload.answers !== null ? payload.answers : {};
   const lines = [];
   for (const question of questions) {
@@ -92,10 +90,11 @@ function answerText(questions, raw) {
     const header = typeof question.header === "string" ? question.header : "";
     const value = header && typeof answers[header] === "string" ? answers[header].trim() : "";
     if (!value) continue;
-    lines.push(header + ": " + value);
+    const text = typeof question.question === "string" && question.question ? question.question : header;
+    lines.push(text + " \\u2192 " + value);
   }
-  if (lines.length === 0) return "The user submitted an empty answer.";
-  return "The user answered:\\n" + lines.join("\\n");
+  if (lines.length === 0) return "User declined to answer questions";
+  return lines.join("\\n");
 }
 `;
 
