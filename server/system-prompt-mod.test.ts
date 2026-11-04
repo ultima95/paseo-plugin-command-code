@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import { afterEach, describe, expect, it } from "vitest";
-import { createAcpConnector } from "./acp-connector";
+import { createAcpConnector, PASEO_COMMANDS } from "./acp-connector";
 import {
   SYSTEM_PROMPT_MOD_SOURCE,
   ensureModFile,
@@ -267,9 +267,17 @@ describe("createAcpConnector prompt channel", () => {
   });
 });
 
+interface FakeModCommand {
+  name: string;
+  description?: string;
+  argumentHint?: string;
+  handler(input: { args: string; cwd: string }): unknown;
+}
+
 interface FakeModCmd {
   addFlag(name: string, spec: unknown): void;
   getFlag(name: string): string | undefined;
+  addCommand(command: FakeModCommand): void;
   hooks(hooks: {
     appendSystemPrompt(): string | undefined;
     beforeToolCall?(input: {
@@ -293,6 +301,7 @@ async function runMod(promptFile: string): Promise<() => string | undefined> {
       if (!flags.has(name)) flags.set(name, "");
     },
     getFlag: (name) => flags.get(name),
+    addCommand: () => undefined,
     hooks: (hooks) => {
       append = hooks.appendSystemPrompt;
     },
@@ -357,6 +366,7 @@ async function runModWithQuestions(
       if (!flags.has(name)) flags.set(name, "");
     },
     getFlag: (name) => flags.get(name),
+    addCommand: () => undefined,
     hooks: (hooks) => {
       before = hooks.beforeToolCall;
     },
@@ -443,5 +453,75 @@ describe("the generated mod answering questions", () => {
     await expect(
       before({ toolCallId: "call-3", toolName: "read_file", input: {} }),
     ).resolves.toBeUndefined();
+  });
+});
+
+async function runModCommands(flags: Map<string, string>): Promise<Map<string, FakeModCommand>> {
+  const dir = await makeDir();
+  const file = await ensureModFile(dir);
+  const mod = (await import(pathToFileURL(file).href)) as { default: (cmd: FakeModCmd) => void };
+  const commands = new Map<string, FakeModCommand>();
+  mod.default({
+    addFlag: (name, _spec) => {
+      if (!flags.has(name)) flags.set(name, "");
+    },
+    getFlag: (name) => flags.get(name),
+    addCommand: (command) => {
+      commands.set(command.name, command);
+    },
+    hooks: () => undefined,
+  });
+  return commands;
+}
+
+describe("the generated mod's slash commands", () => {
+  const flags = () =>
+    new Map([
+      ["system-prompt-file", ""],
+      ["question-dir", ""],
+    ]);
+
+  it("registers exactly the commands the connector advertises", async () => {
+    const commands = await runModCommands(flags());
+    expect([...commands.keys()].sort()).toEqual(
+      PASEO_COMMANDS.map((command) => command.name).sort(),
+    );
+  });
+
+  it("init asks the model to write AGENTS.md", async () => {
+    const commands = await runModCommands(flags());
+    const result = commands.get("init")?.handler({ args: "", cwd: "/tmp" }) as {
+      prompt: string;
+    };
+    expect(result.prompt).toContain("AGENTS.md");
+    expect(result.prompt).toContain("build, test, and typecheck");
+  });
+
+  it("review targets the PR it is given", async () => {
+    const commands = await runModCommands(flags());
+    const result = commands.get("review")?.handler({ args: "42", cwd: "/tmp" }) as {
+      prompt: string;
+    };
+    expect(result.prompt).toContain("pull request 42");
+    expect(result.prompt).toContain("gh pr diff 42");
+  });
+
+  it("btw explains its usage when there is no question", async () => {
+    const commands = await runModCommands(flags());
+    expect(commands.get("btw")?.handler({ args: "  ", cwd: "/tmp" })).toEqual({
+      message: "Usage: /btw <question>",
+    });
+    expect(commands.get("btw")?.handler({ args: "why?", cwd: "/tmp" })).toEqual({
+      prompt: "why?",
+    });
+  });
+
+  it("help explains where the terminal-only commands went", async () => {
+    const commands = await runModCommands(flags());
+    const result = commands.get("help")?.handler({ args: "", cwd: "/tmp" }) as {
+      message: string;
+    };
+    expect(result.message).toContain("terminal-only");
+    expect(result.message).toContain("/compact");
   });
 });

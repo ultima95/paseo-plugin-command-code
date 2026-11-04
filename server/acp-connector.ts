@@ -132,7 +132,7 @@ export function createAcpConnector(
         }
         if (finished) return;
         try {
-          controller.enqueue(hideQuestionInput(message));
+          controller.enqueue(addPaseoCommands(hideQuestionInput(message)));
         } catch {
           finished = true;
         }
@@ -208,6 +208,52 @@ export function createAcpConnector(
   });
 
   return { readable, writable };
+}
+
+/**
+ * Command Code's ACP `listCommands` drops every built-in slash command, and a
+ * mod command that reuses a built-in name is deduped from the menu before that
+ * filter runs. The staged mod still resolves these names (its commands are in
+ * the mod host), so advertise them in the command update the shim turns into
+ * Paseo's slash menu.
+ */
+export const PASEO_COMMANDS = [
+  { name: "help", description: "Explain which Command Code commands Paseo supports" },
+  { name: "init", description: "Create or update AGENTS.md for this project" },
+  { name: "review", description: "Review a pull request or the current branch changes" },
+  { name: "btw", description: "Ask a quick side question (runs as a normal turn in Paseo)" },
+] as const;
+
+export function addPaseoCommands(message: AcpStreamMessage): AcpStreamMessage {
+  if (!("method" in message) || message.method !== "session/update") return message;
+  const params = asRecord(message.params);
+  const update = asRecord(params?.update);
+  if (!update || update.sessionUpdate !== "available_commands_update") return message;
+  const commands = Array.isArray(update.availableCommands) ? update.availableCommands : [];
+  const names = new Set(
+    commands
+      .map((command) => asRecord(command)?.name)
+      .filter((name): name is string => typeof name === "string"),
+  );
+  const missing = PASEO_COMMANDS.filter((command) => !names.has(command.name));
+  if (missing.length === 0) return message;
+  return {
+    ...message,
+    params: {
+      ...params,
+      update: {
+        ...update,
+        availableCommands: [
+          ...commands,
+          ...missing.map((command) => ({
+            name: command.name,
+            description: command.description,
+            input: { hint: "arguments" },
+          })),
+        ],
+      },
+    },
+  };
 }
 
 type JsonRecord = Record<string, unknown>;

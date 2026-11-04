@@ -33,6 +33,31 @@ export default function (cmd) {
       if (event && typeof event.sessionId === "string") sessionId = event.sessionId;
     });
   }
+  cmd.addCommand({
+    name: "help",
+    description: "Explain which Command Code commands Paseo supports",
+    handler: () => ({ message: helpText() }),
+  });
+  cmd.addCommand({
+    name: "init",
+    description: "Create or update AGENTS.md for this project",
+    handler: ({ args }) => ({ prompt: initPrompt(args) }),
+  });
+  cmd.addCommand({
+    name: "review",
+    description: "Review a pull request or the current branch changes",
+    argumentHint: "[PR]",
+    handler: ({ args }) => ({ prompt: reviewPrompt(args.trim()) }),
+  });
+  cmd.addCommand({
+    name: "btw",
+    description: "Ask a quick side question (runs as a normal turn in Paseo)",
+    argumentHint: "<question>",
+    handler: ({ args }) => {
+      const question = args.trim();
+      return question ? { prompt: question } : { message: "Usage: /btw <question>" };
+    },
+  });
   cmd.hooks({
     appendSystemPrompt() {
       if (cached === undefined || cached === "") {
@@ -95,6 +120,33 @@ function answerText(questions, raw) {
   }
   if (lines.length === 0) return "User declined to answer questions";
   return lines.join("\\n");
+}
+function helpText() {
+  return [
+    "Command Code's terminal-only commands (/login, /logout, /theme, /language, /statusline, /model, /effort, /mode, /usage, /upgrade, /sessions, /resume, /rewind, /tree, /clear, /exit, /config, /mcp, /agents, /memory, /provider, /skills, /mods, /plans, /todos, /copy, /export, /share, /trace, /status, /context, /goal) run inside the Command Code TUI and are not reachable over the Agent Client Protocol.",
+    "Use Paseo for their equivalents: the composer selects model, effort, and permission mode; the usage view shows plan limits; the workspace and agent list handle sessions and history.",
+    "Commands available in this session: /help, /init, /review [PR], /btw <question>, /compact.",
+  ].join("\\n");
+}
+function initPrompt(args) {
+  const extra = args.trim();
+  return [
+    "Initialize repository guidance for future agents.",
+    "Explore the codebase first, then create or update AGENTS.md at the repository root.",
+    "Cover what the project is, how to build, test, and typecheck, the architecture and module boundaries, code style and conventions, and any non-obvious workflows or gotchas.",
+    "Cite exact commands, keep it concise and actionable, and preserve correct existing content instead of rewriting it. If AGENTS.md already exists, merge your findings into it.",
+    extra ? "Extra instructions from the user: " + extra : "",
+  ].filter(Boolean).join("\\n\\n");
+}
+function reviewPrompt(target) {
+  const subject = target
+    ? "pull request " + target + ". Gather context with gh pr view " + target + " and gh pr diff " + target
+    : "the current branch's changes. Gather context with git status, git diff, and git log against the repository's default branch";
+  return [
+    "Review " + subject + ".",
+    "Report only real defects: correctness, security, data loss, broken edge cases, and regressions. Ignore style preferences.",
+    "For each finding give file:line, the problem, why it is wrong, and a concrete fix. Order findings by severity. If you find nothing, say so plainly.",
+  ].join("\\n\\n");
 }
 `;
 

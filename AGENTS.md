@@ -20,10 +20,10 @@ The plugin runs inside Paseo's daemon. Paseo supplies `@getpaseo/plugin` and `zo
 
 - `index.server.ts` registers both contributions: the provider and the usage source.
 - `server/provider.ts` wraps `runAcpProvider`, resolves the `cmd`/`cmdc` binary, normalizes ACP tool inputs and failed calls, and prepares the system-prompt channel.
-- `server/acp-connector.ts` owns the stdio transport so the plugin can observe `session/update` messages before the SDK consumes them; it also stages one prompt file per spawned child.
+- `server/acp-connector.ts` owns the stdio transport so the plugin can observe `session/update` messages before the SDK consumes them; it also stages one prompt file per spawned child and advertises the slash commands the ACP server filters out.
 - `server/subagents.ts` projects Command Code's single `task` tool call into synthetic Paseo child sessions with their own timelines.
 - `server/tool-calls.ts` replays tool calls as typed timeline items because Paseo's shim only derives edit and unknown details from `rawInput`.
-- `server/system-prompt-mod.ts` contains the Command Code mod source; the mod reads the staged prompt file in its `appendSystemPrompt` hook, and answers `ask_user_question` from a per-child question folder in `beforeToolCall`.
+- `server/system-prompt-mod.ts` contains the Command Code mod source; the mod reads the staged prompt file in its `appendSystemPrompt` hook, answers `ask_user_question` from a per-child question folder in `beforeToolCall`, and registers `/help`, `/init`, `/review`, and `/btw`.
 - `server/questions.ts` renders Command Code questions through Paseo's `kind: "question"` permission contract and exchanges them with that mod over files, because an ACP permission answer can only select one of the labels the CLI sent.
 - `server/usage.ts` reads Command Code's billing endpoints and maps them to Paseo usage windows, balances, and details. Credits are a pinnable window; org spend limits stay balances.
 - ACP notifications are JSON-RPC over newline-delimited stdio. Paseo renders tool rows by call id and prefers typed details over the shim's `unknown` ones.
