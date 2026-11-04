@@ -15,7 +15,8 @@ import type {
   ProviderRegistration,
   ProviderStatus,
 } from "@getpaseo/plugin/server/provider";
-import { createAcpConnector } from "./acp-connector";
+import { createAcpConnector, type QuestionChannel } from "./acp-connector";
+import { QuestionBridge } from "./questions";
 import { SubagentBridge } from "./subagents";
 import { ensureModFile, type PromptChannel } from "./system-prompt-mod";
 import { ToolCallProjector } from "./tool-calls";
@@ -111,8 +112,10 @@ async function isSignedIn(): Promise<boolean> {
 const connectionState = new AsyncLocalStorage<{
   bridge: SubagentBridge;
   tools: ToolCallProjector;
+  questions: QuestionBridge;
   launch?: ProviderLaunch;
   promptChannel?: PromptChannel;
+  questionChannel?: QuestionChannel;
 }>();
 
 const connector: AcpConnector = () => {
@@ -126,8 +129,10 @@ const connector: AcpConnector = () => {
     (message) => {
       state.bridge.observe(message);
       state.tools.observe(message);
+      state.questions.observe(message);
     },
     state.promptChannel,
+    state.questionChannel,
   );
 };
 
@@ -150,14 +155,18 @@ function pluginDataDir(): string {
   return join(process.env.PASEO_HOME ?? join(homedir(), ".paseo"), "plugin-data", "command-code");
 }
 
-async function preparePromptChannel(): Promise<PromptChannel | undefined> {
+async function prepareChannels(): Promise<
+  { prompt: PromptChannel; questionsDir: string } | undefined
+> {
   try {
     const dir = pluginDataDir();
     const modPath = await ensureModFile(dir);
     const promptsDir = join(dir, "prompts");
     // Created here, once per connection; the per-child files are the connector's.
     await mkdir(promptsDir, { recursive: true });
-    return { modPath, promptsDir };
+    const questionsDir = join(dir, "questions");
+    await mkdir(questionsDir, { recursive: true });
+    return { prompt: { modPath, promptsDir }, questionsDir };
   } catch (error) {
     // Losing the prompt is much better than losing the provider entirely.
     const message = error instanceof Error ? error.message : String(error);
@@ -182,15 +191,25 @@ export function createProvider(): ProviderRegistration {
     async connect(request: ProviderConnectRequest) {
       const bridge = new SubagentBridge();
       const tools = new ToolCallProjector();
+      const questions = new QuestionBridge();
+      const channels = await prepareChannels();
       const state = {
         bridge,
         tools,
+        questions,
         launch: request.launch,
-        promptChannel: await preparePromptChannel(),
+        promptChannel: channels?.prompt,
+        questionChannel: channels
+          ? {
+              dir: channels.questionsDir,
+              register: (dir: string) => questions.register(dir),
+              unregister: (dir: string) => questions.unregister(dir),
+            }
+          : undefined,
       };
       const run = <T>(operation: () => Promise<T>) => connectionState.run(state, operation);
       const connection = await run(() => acp.connect(request));
-      return tools.wrap(bridge.wrap(connection, run), run);
+      return questions.wrap(tools.wrap(bridge.wrap(connection, run), run), run);
     },
 
     async status({ launch }): Promise<ProviderStatus> {

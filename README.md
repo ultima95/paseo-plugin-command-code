@@ -37,6 +37,9 @@ The provider id is `command-code`. Pick it in the model picker, or set it as a d
 - **Persistence**: the ACP server supports session load and resume, so agents reopen where
   they left off.
 - **Permissions**: file edits and shell commands surface as normal Paseo permission prompts.
+- **Questions**: `ask_user_question` opens Paseo's question form instead of a fixed button row,
+  so you can pick a suggested option, type an answer of your own, skip the question, or step
+  through several questions before submitting.
 - **Subagents**: each `agent`/`task` call becomes a Paseo subagent with its own timeline, live
   inner tool steps, and final result. The parent's "Agent" row becomes a subagent card, and the
   run shows up in Paseo's Subagents panel.

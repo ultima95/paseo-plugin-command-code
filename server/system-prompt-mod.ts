@@ -13,11 +13,26 @@ import type { AcpStreamMessage } from "@getpaseo/plugin/server/acp";
  * An empty read is not cached: a child whose first hook call lands before the
  * session request wrote the file (or whose scan finds the file missing) must
  * read again on the next call instead of memoizing "no prompt" for the session.
+ *
+ * The same mod answers `ask_user_question`. Command Code's ACP permission path
+ * can only return one of the option ids it sent, so the tool itself would never
+ * see free text. Blocking the call in `beforeToolCall` and writing the question
+ * to a per-child folder lets the plugin render Paseo's question form, which has
+ * an "Other" field and a Dismiss action, then hand the answer back as the tool
+ * result.
  */
-export const SYSTEM_PROMPT_MOD_SOURCE = `import { readFileSync } from "node:fs";
+export const SYSTEM_PROMPT_MOD_SOURCE = `import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 export default function (cmd) {
   cmd.addFlag("system-prompt-file", { type: "string", default: "", description: "File with the Paseo session system prompt" });
+  cmd.addFlag("question-dir", { type: "string", default: "", description: "Folder for Paseo question requests and answers" });
   let cached;
+  let sessionId = "";
+  if (cmd.on) {
+    cmd.on("run_start", (event) => {
+      if (event && typeof event.sessionId === "string") sessionId = event.sessionId;
+    });
+  }
   cmd.hooks({
     appendSystemPrompt() {
       if (cached === undefined || cached === "") {
@@ -26,7 +41,61 @@ export default function (cmd) {
       }
       return cached || undefined;
     },
+    async beforeToolCall({ toolCallId, toolName, input, signal }) {
+      if (toolName !== "ask_user_question") return undefined;
+      const dir = cmd.getFlag("question-dir");
+      if (!dir) return undefined;
+      const id = String(toolCallId || "").replace(/[^A-Za-z0-9_.-]/g, "_");
+      if (!id) return undefined;
+      const questions = input && Array.isArray(input.questions) ? input.questions : [];
+      try {
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "request-" + id + ".json"), JSON.stringify({
+          id,
+          sessionId,
+          questions,
+          hideCustomInput: Boolean(input && input.hideCustomInput === true),
+        }), "utf8");
+      } catch {
+        return undefined;
+      }
+      const answerFile = join(dir, "answer-" + id + ".json");
+      const deadline = Date.now() + 30 * 60 * 1000;
+      while (Date.now() < deadline) {
+        if (signal && signal.aborted) {
+          return { result: [{ type: "text", text: "The user cancelled the question." }] };
+        }
+        let raw;
+        try {
+          raw = readFileSync(answerFile, "utf8");
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          continue;
+        }
+        try { unlinkSync(answerFile); } catch {}
+        return { result: [{ type: "text", text: answerText(questions, raw) }] };
+      }
+      return { result: [{ type: "text", text: "The user did not answer the question." }] };
+    },
   });
+}
+function answerText(questions, raw) {
+  let payload = null;
+  try { payload = JSON.parse(raw); } catch {}
+  if (payload && payload.cancelled) {
+    return "The user dismissed the question without answering. Continue with your best judgment, or ask again with different options.";
+  }
+  const answers = payload && typeof payload.answers === "object" && payload.answers !== null ? payload.answers : {};
+  const lines = [];
+  for (const question of questions) {
+    if (!question || typeof question !== "object") continue;
+    const header = typeof question.header === "string" ? question.header : "";
+    const value = header && typeof answers[header] === "string" ? answers[header].trim() : "";
+    if (!value) continue;
+    lines.push(header + ": " + value);
+  }
+  if (lines.length === 0) return "The user submitted an empty answer.";
+  return "The user answered:\\n" + lines.join("\\n");
 }
 `;
 

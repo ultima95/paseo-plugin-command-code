@@ -270,7 +270,15 @@ describe("createAcpConnector prompt channel", () => {
 interface FakeModCmd {
   addFlag(name: string, spec: unknown): void;
   getFlag(name: string): string | undefined;
-  hooks(hooks: { appendSystemPrompt(): string | undefined }): void;
+  hooks(hooks: {
+    appendSystemPrompt(): string | undefined;
+    beforeToolCall?(input: {
+      toolCallId: string;
+      toolName: string;
+      input: Record<string, unknown>;
+      signal?: AbortSignal;
+    }): Promise<unknown>;
+  }): void;
 }
 
 /** Load a freshly written mod file and wire it to a stand-in for Command Code's `cmd`. */
@@ -320,5 +328,125 @@ describe("the generated mod at runtime", () => {
   it("returns undefined when the flag names no file", async () => {
     const append = await runMod("");
     expect(append()).toBeUndefined();
+  });
+});
+
+async function runModWithQuestions(
+  flags: Map<string, string>,
+): Promise<
+  (input: {
+    toolCallId: string;
+    toolName: string;
+    input: Record<string, unknown>;
+    signal?: AbortSignal;
+  }) => Promise<unknown>
+> {
+  const dir = await makeDir();
+  const file = await ensureModFile(dir);
+  const mod = (await import(pathToFileURL(file).href)) as { default: (cmd: FakeModCmd) => void };
+  let before:
+    | ((input: {
+        toolCallId: string;
+        toolName: string;
+        input: Record<string, unknown>;
+        signal?: AbortSignal;
+      }) => Promise<unknown>)
+    | undefined;
+  mod.default({
+    addFlag: (name, _spec) => {
+      if (!flags.has(name)) flags.set(name, "");
+    },
+    getFlag: (name) => flags.get(name),
+    hooks: (hooks) => {
+      before = hooks.beforeToolCall;
+    },
+  });
+  if (!before) throw new Error("the mod registered no beforeToolCall hook");
+  return before;
+}
+
+describe("the generated mod answering questions", () => {
+  it("hands the answered question back as the tool result", async () => {
+    const dir = await makeDir();
+    const questionDir = join(dir, "questions");
+    const before = await runModWithQuestions(
+      new Map([
+        ["question-dir", questionDir],
+        ["system-prompt-file", ""],
+      ]),
+    );
+
+    const pending = before({
+      toolCallId: "call-1",
+      toolName: "ask_user_question",
+      input: {
+        questions: [{ header: "Approach", question: "Which one?", options: ["A", "B"] }],
+      },
+    });
+
+    const requestFile = join(questionDir, "request-call-1.json");
+    const deadline = Date.now() + 3_000;
+    while (!existsSync(requestFile)) {
+      if (Date.now() > deadline) throw new Error("the mod never wrote its request");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    const request = JSON.parse(await readFile(requestFile, "utf8")) as {
+      id: string;
+      questions: unknown[];
+    };
+    expect(request.id).toBe("call-1");
+    expect(request.questions).toHaveLength(1);
+
+    await writeFile(
+      join(questionDir, "answer-call-1.json"),
+      JSON.stringify({ answers: { Approach: "Take the other path" } }),
+      "utf8",
+    );
+    await expect(pending).resolves.toEqual({
+      result: [{ type: "text", text: "The user answered:\nApproach: Take the other path" }],
+    });
+  });
+
+  it("reports a dismissed question without failing the run", async () => {
+    const dir = await makeDir();
+    const questionDir = join(dir, "questions");
+    const before = await runModWithQuestions(
+      new Map([
+        ["question-dir", questionDir],
+        ["system-prompt-file", ""],
+      ]),
+    );
+    const pending = before({
+      toolCallId: "call-2",
+      toolName: "ask_user_question",
+      input: { questions: [{ header: "Approach", question: "Which one?", options: ["A"] }] },
+    });
+    const answerFile = join(questionDir, "answer-call-2.json");
+    const deadline = Date.now() + 3_000;
+    while (!existsSync(join(questionDir, "request-call-2.json"))) {
+      if (Date.now() > deadline) throw new Error("the mod never wrote its request");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await writeFile(answerFile, JSON.stringify({ cancelled: true }), "utf8");
+    await expect(pending).resolves.toEqual({
+      result: [
+        {
+          type: "text",
+          text: "The user dismissed the question without answering. Continue with your best judgment, or ask again with different options.",
+        },
+      ],
+    });
+  });
+
+  it("leaves other tools untouched", async () => {
+    const before = await runModWithQuestions(
+      new Map([
+        ["question-dir", ""],
+        ["system-prompt-file", ""],
+      ]),
+    );
+    await expect(
+      before({ toolCallId: "call-3", toolName: "read_file", input: {} }),
+    ).resolves.toBeUndefined();
   });
 });

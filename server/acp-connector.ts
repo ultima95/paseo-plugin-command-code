@@ -1,10 +1,21 @@
 import { randomUUID } from "node:crypto";
-import { rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnProcess, terminateProcess } from "@getpaseo/plugin/server";
 import type { AcpStream, AcpStreamMessage } from "@getpaseo/plugin/server/acp";
 import type { ProviderLaunch } from "@getpaseo/plugin/server/provider";
 import { extractSystemPrompt, type PromptChannel } from "./system-prompt-mod";
+
+/**
+ * The per-child question folders live under one base directory; the bridge
+ * watches only the folders it is told about, and the folder is removed with the
+ * child that owns it.
+ */
+export interface QuestionChannel {
+  dir: string;
+  register(dir: string): void;
+  unregister(dir: string): void;
+}
 
 /**
  * The ACP shim exposes a connector extension point precisely so a provider can
@@ -18,6 +29,7 @@ export function createAcpConnector(
   fallback: readonly [string, ...string[]],
   observe: (message: AcpStreamMessage) => void,
   promptChannel?: PromptChannel,
+  questionChannel?: QuestionChannel,
 ): AcpStream {
   // The channel names a directory, not a file: this function runs once per
   // spawned child, and one file shared across children would let a catalog or
@@ -26,18 +38,33 @@ export function createAcpConnector(
     ? join(promptChannel.promptsDir, `${randomUUID()}.md`)
     : undefined;
 
+  // Each child gets its own question folder, allocated here so it can never
+  // collide with another child's in-flight question or cleanup.
+  const questionDir =
+    promptChannel && questionChannel
+      ? join(questionChannel.dir, randomUUID())
+      : undefined;
+  if (questionDir !== undefined) {
+    mkdirSync(questionDir, { recursive: true });
+    questionChannel?.register(questionDir);
+  }
+
   // Command Code takes mods after the subcommand (`cmd acp --mod ...`), so they
   // are appended to whatever launch the daemon resolved.
   const baseArgs = launch?.args ?? fallback.slice(1);
-  const args = promptChannel && promptFile
-    ? [
-        ...baseArgs,
-        "--mod",
-        promptChannel.modPath,
-        "--mod-option",
-        `system-prompt-file=${promptFile}`,
-      ]
-    : baseArgs;
+  const modArgs: string[] = [];
+  if (promptChannel && promptFile) {
+    modArgs.push(
+      "--mod",
+      promptChannel.modPath,
+      "--mod-option",
+      `system-prompt-file=${promptFile}`,
+    );
+  }
+  if (questionDir !== undefined) {
+    modArgs.push("--mod-option", `question-dir=${questionDir}`);
+  }
+  const args = modArgs.length > 0 ? [...baseArgs, ...modArgs] : baseArgs;
 
   const child = spawnProcess(launch?.command ?? fallback[0], args, {
     env: launch?.env ?? process.env,
@@ -54,6 +81,19 @@ export function createAcpConnector(
     child.once("close", () => {
       try {
         rmSync(own, { force: true });
+      } catch {
+        // Ignore: cleanup must never fail a finished session.
+      }
+    });
+  }
+
+  // Same rule for the question folder: a closing child drops only its own.
+  if (questionDir !== undefined) {
+    const own = questionDir;
+    child.once("close", () => {
+      questionChannel?.unregister(own);
+      try {
+        rmSync(own, { recursive: true, force: true });
       } catch {
         // Ignore: cleanup must never fail a finished session.
       }
