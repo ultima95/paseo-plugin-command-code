@@ -181,8 +181,19 @@ function buildDetail(state: ToolState): ProviderToolCallDetail | null {
   const summary = state.label.includes(": ") ? state.label.slice(state.label.indexOf(": ") + 2) : "";
   const input = state.input;
 
-  if (input.question !== undefined && Array.isArray(input.options)) {
-    return { type: "plain_text", label: "Question", text: asString(input.question) };
+  if (Array.isArray(input.questions) || (input.question !== undefined && Array.isArray(input.options))) {
+    // Command Code sends the answer as content on the completed update, which
+    // the shim drops: without this typed detail the card would show the raw
+    // question payload and no result.
+    const asked = Array.isArray(input.questions)
+      ? input.questions
+          .map((entry) => firstString(asRecord(entry)?.question))
+          .filter((text): text is string => Boolean(text))
+      : [];
+    const question = asked.length > 0 ? asked.join("\n\n") : asString(input.question);
+    const text = output || question;
+    if (!text) return null;
+    return { type: "plain_text", label: "Question", text };
   }
 
   switch (label) {
