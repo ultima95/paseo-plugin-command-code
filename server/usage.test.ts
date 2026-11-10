@@ -77,13 +77,18 @@ describe("Command Code usage source", () => {
     const credits = report.windows.find((window) => window.id === "credits");
     expect(credits).toMatchObject({
       id: "credits",
-      label: "Credits · 19.55 left",
+      label: "Credits · 19.55 / 72.74",
       shortLabel: "22d left",
       usedPct: 73.12,
       resetsAt: periodEnd,
       tone: "warning",
     });
     expect(credits?.remainingPct).toBeCloseTo(26.88);
+    expect(report.details).toContainEqual({
+      id: "credits_total",
+      label: "Credits this period",
+      value: "53.19 used of 72.74",
+    });
     expect(report.balances).toEqual([]);
   });
 
@@ -134,5 +139,10 @@ describe("Command Code usage source", () => {
     const credits = report.windows.find((window) => window.id === "credits");
     expect(credits?.usedPct).toBe(72.07);
     expect(credits?.remainingPct).toBeCloseTo(27.93);
+    expect(report.details).toContainEqual({
+      id: "credits_total",
+      label: "Credits this period",
+      value: "50.45 used of 70",
+    });
   });
 });

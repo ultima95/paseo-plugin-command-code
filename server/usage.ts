@@ -408,6 +408,22 @@ function creditWindow(
   const free = round2(Math.max(0, rawCredits.freeCredits ?? 0));
   const remaining = round2(monthly + purchased + free);
 
+  const subscriptionData = subscription?.data;
+  const plan = planFor(subscriptionData?.planId ?? rawCredits.planId);
+  const activePlanCredits =
+    subscriptionData?.status === "active" ? (plan?.monthlyCredits ?? null) : null;
+  // The credits endpoint reports what is left, not the period grant, so the grant
+  // comes from the period's spend plus the remainder. The plan table is only a
+  // fallback for when the usage summary is unavailable.
+  const spent = summary?.totalCost == null ? null : round2(Math.max(0, summary.totalCost));
+  const pool = round2(
+    spent !== null ? spent + remaining : (activePlanCredits ?? 0) + purchased + free,
+  );
+
+  if (pool <= 0 && remaining <= 0) return null;
+
+  const used = round2(Math.max(0, pool - remaining));
+
   if (monthly > 0) {
     details.push({
       id: "monthly_credits",
@@ -425,26 +441,15 @@ function creditWindow(
   if (free > 0) {
     details.push({ id: "free_credits", label: "Free credits", value: formatCredits(free) });
   }
-
-  const subscriptionData = subscription?.data;
-  const plan = planFor(subscriptionData?.planId ?? rawCredits.planId);
-  const activePlanCredits =
-    subscriptionData?.status === "active" ? (plan?.monthlyCredits ?? null) : null;
-  // The credits endpoint reports what is left, not the period grant, so the grant
-  // comes from the period's spend plus the remainder. The plan table is only a
-  // fallback for when the usage summary is unavailable.
-  const spent = summary?.totalCost == null ? null : round2(Math.max(0, summary.totalCost));
-  const pool = round2(
-    spent !== null ? spent + remaining : (activePlanCredits ?? 0) + purchased + free,
-  );
-
-  if (pool <= 0 && remaining <= 0) return null;
-
-  const used = round2(Math.max(0, pool - remaining));
+  details.push({
+    id: "credits_total",
+    label: "Credits this period",
+    value: `${formatCredits(used)} used of ${formatCredits(pool)}`,
+  });
 
   return windowFromUsed({
     id: "credits",
-    label: `Credits · ${formatCredits(remaining)} left`,
+    label: `Credits · ${formatCredits(remaining)} / ${formatCredits(pool)}`,
     shortLabel: "cr",
     used,
     cap: pool,
