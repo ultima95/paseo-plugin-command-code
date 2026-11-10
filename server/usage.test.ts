@@ -79,11 +79,60 @@ describe("Command Code usage source", () => {
       id: "credits",
       label: "Credits · 19.55 left",
       shortLabel: "22d left",
-      usedPct: 72.07,
+      usedPct: 73.12,
       resetsAt: periodEnd,
       tone: "warning",
     });
-    expect(credits?.remainingPct).toBeCloseTo(27.93);
+    expect(credits?.remainingPct).toBeCloseTo(26.88);
     expect(report.balances).toEqual([]);
+  });
+
+  it("falls back to the plan grant when the usage summary is unavailable", async () => {
+    const periodEnd = new Date(Date.now() + 22 * 86_400_000 + 3_600_000).toISOString();
+    const periodStart = new Date(Date.now() - 8 * 86_400_000).toISOString();
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: unknown) => {
+        const path = new URL(String(input)).pathname;
+        if (path.endsWith("/alpha/billing/credits")) {
+          return json({
+            credits: {
+              planId: "individual-goat",
+              monthlyCredits: 19.55,
+              purchasedCredits: 0,
+              freeCredits: 0,
+            },
+            sandboxAccess: false,
+          });
+        }
+        if (path.endsWith("/alpha/billing/subscriptions")) {
+          return json({
+            success: true,
+            data: {
+              status: "active",
+              planId: "individual-goat",
+              currentPeriodStart: periodStart,
+              currentPeriodEnd: periodEnd,
+            },
+          });
+        }
+        if (path.endsWith("/alpha/usage/summary")) {
+          return new Response("boom", { status: 500 });
+        }
+        if (path.endsWith("/alpha/whoami")) {
+          return json({ user: { id: "user-1" }, org: null, orgLimits: [] });
+        }
+        throw new Error(`unexpected request: ${path}`);
+      }),
+    );
+
+    const report = await createUsageSource().fetch({ store: "file", path: await authFile() });
+    expect(report.status).toBe("available");
+    if (report.status !== "available") return;
+
+    const credits = report.windows.find((window) => window.id === "credits");
+    expect(credits?.usedPct).toBe(72.07);
+    expect(credits?.remainingPct).toBeCloseTo(27.93);
   });
 });

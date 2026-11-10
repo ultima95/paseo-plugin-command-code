@@ -430,11 +430,12 @@ function creditWindow(
   const plan = planFor(subscriptionData?.planId ?? rawCredits.planId);
   const activePlanCredits =
     subscriptionData?.status === "active" ? (plan?.monthlyCredits ?? null) : null;
-  const spent = round2(Math.max(0, summary?.totalCost ?? 0));
+  // The credits endpoint reports what is left, not the period grant, so the grant
+  // comes from the period's spend plus the remainder. The plan table is only a
+  // fallback for when the usage summary is unavailable.
+  const spent = summary?.totalCost == null ? null : round2(Math.max(0, summary.totalCost));
   const pool = round2(
-    activePlanCredits !== null
-      ? Math.max(activePlanCredits, monthly) + purchased + free
-      : spent + remaining,
+    spent !== null ? spent + remaining : (activePlanCredits ?? 0) + purchased + free,
   );
 
   if (pool <= 0 && remaining <= 0) return null;
